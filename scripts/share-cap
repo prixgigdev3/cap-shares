@@ -132,6 +132,30 @@ def prepare_mp4(src: Path, work: Path) -> Path:
     return out
 
 
+PAGES_FILE_LIMIT = 90 * 1024 * 1024
+
+
+def fit_for_github(src: Path, work: Path) -> Path:
+    """GitHub and GitHub Pages reject files over 100MB. Compress until we fit."""
+    if src.stat().st_size <= PAGES_FILE_LIMIT:
+        return src
+    out = work / "video-fit.mp4"
+    for height, crf in ((1080, 23), (720, 26), (720, 30), (540, 32)):
+        p = run(
+            [
+                "ffmpeg", "-y", "-i", str(src),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", str(crf),
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-vf", f"scale=-2:'min({height},ih)'",
+                str(out),
+            ]
+        )
+        if p.returncode == 0 and out.exists() and out.stat().st_size <= PAGES_FILE_LIMIT:
+            return out
+    die("could not compress this recording under GitHub's 100MB file limit")
+
+
 def make_poster(src: Path, work: Path) -> Path:
     poster = work / "poster.jpg"
     p = run(
@@ -278,13 +302,13 @@ def publish(src: Path, title: str | None) -> dict:
     with tempfile.TemporaryDirectory(prefix="share-cap-") as tmp:
         work = Path(tmp)
         source = resolve_source(src, work)
-        mp4 = prepare_mp4(source, work)
+        mp4 = fit_for_github(prepare_mp4(source, work), work)
         poster = make_poster(mp4, work)
         info = ffprobe_info(mp4)
         tag = f"v-{vid}"
-        video_url = f"https://github.com/{FULL_REPO}/releases/download/{tag}/video.mp4"
-        poster_url = f"https://github.com/{FULL_REPO}/releases/download/{tag}/poster.jpg"
         page_url = f"{PAGES}/v/{vid}/"
+        video_url = f"{page_url}video.mp4"
+        poster_url = f"{page_url}poster.jpg"
         rec = {
             "id": vid,
             "title": title,
@@ -304,6 +328,8 @@ def publish(src: Path, title: str | None) -> dict:
         template = (LOCAL / "scripts" / "player-template.html").read_text()
         page_dir = LOCAL / "v" / vid
         page_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(mp4, page_dir / "video.mp4")
+        shutil.copy2(poster, page_dir / "poster.jpg")
         (page_dir / "index.html").write_text(render_player(template, rec))
 
         catalog_path = LOCAL / "videos.json"
