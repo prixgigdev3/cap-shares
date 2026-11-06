@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cap share test — Cap Shares</title>
+  <meta name="description" content="Cap share test" />
+  <meta property="og:title" content="Cap share test" />
+  <meta property="og:type" content="video.other" />
+  <meta property="og:url" content="https://prixgigdev3.github.io/cap-shares/v/261106-180d07/" />
+  <meta property="og:image" content="https://github.com/prixgigdev3/cap-shares/releases/download/v-261106-180d07/poster.jpg" />
+  <meta property="og:video" content="https://github.com/prixgigdev3/cap-shares/releases/download/v-261106-180d07/video.mp4" />
+  <meta property="og:video:type" content="video/mp4" />
+  <meta name="twitter:card" content="player" />
+  <meta name="twitter:title" content="Cap share test" />
+  <meta name="twitter:image" content="https://github.com/prixgigdev3/cap-shares/releases/download/v-261106-180d07/poster.jpg" />
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="../../assets/styles.css" />
+</head>
+<body>
+  <div class="player-shell">
+    <header class="top">
+      <a class="brand" href="../../">
+        <img src="../../favicon.svg" alt="" />
+        Cap Shares <span>/ 261106-180d07</span>
+      </a>
+      <a class="meta-link" href="https://github.com/prixgigdev3/cap-shares">GitHub</a>
+    </header>
+    <div class="video-frame">
+      <video
+        controls
+        playsinline
+        preload="metadata"
+        poster="https://github.com/prixgigdev3/cap-shares/releases/download/v-261106-180d07/poster.jpg"
+        src="https://github.com/prixgigdev3/cap-shares/releases/download/v-261106-180d07/video.mp4"
+      ></video>
+    </div>
+    <div class="player-meta">
+      <h1>Cap share test</h1>
+      <div class="row">
+        <span>6 Nov 2026, 10:07</span>
+        <span>·</span>
+        <span>0:03</span>
+        <button class="btn primary" type="button" id="copy">Copy link</button>
+        <a class="btn" href="https://github.com/prixgigdev3/cap-shares/releases/download/v-261106-180d07/video.mp4" download="261106-180d07.mp4">Download</a>
+      </div>
+    </div>
+    <footer class="foot">Recorded with Cap. Shared via GitHub Pages + Releases, like Loom — without Loom.</footer>
+  </div>
+  <div class="toast" id="toast">Link copied</div>
+  <script>
+    const pageUrl = "https://prixgigdev3.github.io/cap-shares/v/261106-180d07/";
+    document.getElementById("copy").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(pageUrl); }
+      catch {
+        const t = document.createElement("input");
+        t.value = pageUrl; document.body.appendChild(t); t.select();
+        document.execCommand("copy"); t.remove();
+      }
+      const toast = document.getElementById("toast");
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 1400);
+    });
+  </script>
+</body>
+</html>
