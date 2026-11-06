@@ -1,0 +1,9 @@
+.DS_Store
+.tmp/
+*.mp4
+*.mov
+*.webm
+*.mkv
+poster.jpg
+__pycache__/
+*.pyc

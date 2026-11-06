@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}} — Cap Shares</title>
+  <meta name="description" content="{{TITLE}}" />
+  <meta property="og:title" content="{{TITLE}}" />
+  <meta property="og:type" content="video.other" />
+  <meta property="og:url" content="{{PAGE_URL}}" />
+  <meta property="og:image" content="{{POSTER_URL}}" />
+  <meta property="og:video" content="{{VIDEO_URL}}" />
+  <meta property="og:video:type" content="video/mp4" />
+  <meta name="twitter:card" content="player" />
+  <meta name="twitter:title" content="{{TITLE}}" />
+  <meta name="twitter:image" content="{{POSTER_URL}}" />
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="../../assets/styles.css" />
+</head>
+<body>
+  <div class="player-shell">
+    <header class="top">
+      <a class="brand" href="../../">
+        <img src="../../favicon.svg" alt="" />
+        Cap Shares <span>/ {{ID}}</span>
+      </a>
+      <a class="meta-link" href="{{REPO_URL}}">GitHub</a>
+    </header>
+    <div class="video-frame">
+      <video
+        controls
+        playsinline
+        preload="metadata"
+        poster="{{POSTER_URL}}"
+        src="{{VIDEO_URL}}"
+      ></video>
+    </div>
+    <div class="player-meta">
+      <h1>{{TITLE}}</h1>
+      <div class="row">
+        <span>{{DATE}}</span>
+        <span>·</span>
+        <span>{{DURATION_LABEL}}</span>
+        <button class="btn primary" type="button" id="copy">Copy link</button>
+        <a class="btn" href="{{VIDEO_URL}}" download="{{ID}}.mp4">Download</a>
+      </div>
+    </div>
+    <footer class="foot">Recorded with Cap. Shared via GitHub Pages + Releases, like Loom — without Loom.</footer>
+  </div>
+  <div class="toast" id="toast">Link copied</div>
+  <script>
+    const pageUrl = {{PAGE_URL_JSON}};
+    document.getElementById("copy").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(pageUrl); }
+      catch {
+        const t = document.createElement("input");
+        t.value = pageUrl; document.body.appendChild(t); t.select();
+        document.execCommand("copy"); t.remove();
+      }
+      const toast = document.getElementById("toast");
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 1400);
+    });
+  </script>
+</body>
+</html>

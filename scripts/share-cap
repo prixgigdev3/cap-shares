@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""Publish a Cap recording as a Loom-style GitHub share URL.
+
+Usage:
+  share-cap recording.mp4
+  share-cap recording.mp4 --title "Checkout bug"
+  share-cap path/to/project.cap
+  share-cap --latest
+
+The share page lives on GitHub Pages:
+  https://prixgigdev3.github.io/cap-shares/v/<id>/
+The video file is a GitHub Release asset (public).
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+OWNER = os.environ.get("CAP_SHARES_OWNER", "prixgigdev3")
+REPO = os.environ.get("CAP_SHARES_REPO", "cap-shares")
+LOCAL = Path(os.environ.get("CAP_SHARES_DIR", str(Path.home() / "Sites" / "cap-shares"))).expanduser()
+PAGES = os.environ.get("CAP_SHARES_PAGES", f"https://{OWNER}.github.io/{REPO}")
+FULL_REPO = f"{OWNER}/{REPO}"
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=False, text=True, capture_output=True, **kwargs)
+
+
+def run_ok(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    p = run(cmd, **kwargs)
+    if p.returncode != 0:
+        err = (p.stderr or p.stdout or "").strip()
+        die(f"$ {' '.join(cmd)}\n{err}")
+    return p
+
+
+def which(name: str) -> str | None:
+    return shutil.which(name)
+
+
+def new_id() -> str:
+    stamp = datetime.now().strftime("%y%m%d")
+    return f"{stamp}-{secrets.token_hex(3)}"
+
+
+def slug_title(text: str) -> str:
+    text = text.strip() or "Cap recording"
+    return re.sub(r"\s+", " ", text)[:120]
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def ffprobe_info(path: Path) -> dict:
+    p = run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration:stream=codec_name,codec_type,pix_fmt,width,height",
+            "-of", "json", str(path),
+        ]
+    )
+    if p.returncode != 0:
+        die(f"ffprobe failed: {p.stderr.strip()}")
+    data = json.loads(p.stdout or "{}")
+    duration = float((data.get("format") or {}).get("duration") or 0)
+    video = next((s for s in data.get("streams") or [] if s.get("codec_type") == "video"), {})
+    audio = next((s for s in data.get("streams") or [] if s.get("codec_type") == "audio"), {})
+    return {
+        "duration": duration,
+        "vcodec": video.get("codec_name"),
+        "pix_fmt": video.get("pix_fmt"),
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "acodec": audio.get("codec_name"),
+    }
+
+
+def prepare_mp4(src: Path, work: Path) -> Path:
+    info = ffprobe_info(src)
+    out = work / "video.mp4"
+    web_ok = (
+        src.suffix.lower() == ".mp4"
+        and info["vcodec"] in {"h264", "avc1"}
+        and info["pix_fmt"] in {"yuv420p", "yuvj420p"}
+        and info["acodec"] in {None, "aac", "mp3"}
+    )
+    # Always remux with faststart so the GitHub-hosted file can start playing quickly.
+    if web_ok and info["acodec"] in {"aac", "mp3", None}:
+        p = run(
+            [
+                "ffmpeg", "-y", "-i", str(src),
+                "-c", "copy", "-movflags", "+faststart",
+                str(out),
+            ]
+        )
+        if p.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            return out
+    p = run(
+        [
+            "ffmpeg", "-y", "-i", str(src),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            str(out),
+        ]
+    )
+    if p.returncode != 0 or not out.exists():
+        die(f"ffmpeg transcode failed:\n{(p.stderr or '')[-2000:]}")
+    return out
+
+
+def make_poster(src: Path, work: Path) -> Path:
+    poster = work / "poster.jpg"
+    p = run(
+        [
+            "ffmpeg", "-y", "-i", str(src),
+            "-frames:v", "1", "-q:v", "3",
+            "-vf", "scale='min(1280,iw)':-2",
+            str(poster),
+        ]
+    )
+    if p.returncode != 0 or not poster.exists():
+        die(f"ffmpeg poster failed:\n{(p.stderr or '')[-1500:]}")
+    return poster
+
+
+def latest_recording() -> Path:
+    cap = which("cap")
+    if not cap:
+        die("cap CLI not found. Expected /Users/johnnynel/.local/bin/cap")
+    p = run([cap, "recordings", "list", "--json"])
+    if p.returncode != 0:
+        die(f"cap recordings list failed:\n{(p.stderr or p.stdout).strip()}")
+    try:
+        data = json.loads(p.stdout or "{}")
+    except json.JSONDecodeError:
+        die(f"cap recordings list did not return JSON:\n{p.stdout[:500]}")
+    items = data if isinstance(data, list) else data.get("recordings") or data.get("items") or data.get("data") or []
+    if not items:
+        die("no Cap recordings found. Record one in Cap first.")
+    def rec_path(item: dict) -> str:
+        return item.get("path") or item.get("projectPath") or item.get("recordingPath") or ""
+    def rec_time(item: dict) -> str:
+        return str(item.get("modifiedAt") or item.get("createdAt") or item.get("mtime") or rec_path(item))
+    items = sorted(items, key=rec_time, reverse=True)
+    path = Path(rec_path(items[0])).expanduser()
+    if not path.exists():
+        die(f"latest Cap recording path does not exist: {path}")
+    return path
+
+
+def export_cap_project(project: Path, work: Path) -> Path:
+    cap = which("cap")
+    if not cap:
+        die("cap CLI not found; cannot export a .cap project")
+    out = work / "exported.mp4"
+    p = run([cap, "export", str(project), "--output", str(out), "--json"], timeout=600)
+    if p.returncode != 0:
+        die(f"cap export failed:\n{(p.stderr or p.stdout)[-2000:]}")
+    if not out.exists():
+        # Some CLI versions print the output path in JSON instead of writing --output.
+        try:
+            last = [json.loads(line) for line in (p.stdout or "").splitlines() if line.strip()]
+            for ev in reversed(last):
+                candidate = ev.get("output") or ev.get("path") or ev.get("file")
+                if candidate and Path(candidate).exists():
+                    return Path(candidate)
+        except Exception:
+            pass
+        die("cap export finished but no mp4 was written")
+    return out
+
+
+def resolve_source(path: Path, work: Path) -> Path:
+    if path.is_dir() or path.suffix.lower() == ".cap":
+        return export_cap_project(path, work)
+    if not path.is_file():
+        die(f"file not found: {path}")
+    return path
+
+
+def ensure_repo() -> None:
+    if not (LOCAL / ".git").exists():
+        LOCAL.parent.mkdir(parents=True, exist_ok=True)
+        p = run(["gh", "repo", "clone", FULL_REPO, str(LOCAL)])
+        if p.returncode != 0:
+            die(f"could not clone {FULL_REPO}:\n{(p.stderr or p.stdout).strip()}")
+    pull = run(["git", "-C", str(LOCAL), "pull", "--rebase", "--autostash"], timeout=120)
+    if pull.returncode != 0:
+        print(f"warning: git pull failed (continuing):\n{(pull.stderr or pull.stdout).strip()}", file=sys.stderr)
+
+
+def render_player(template: str, rec: dict) -> str:
+    page = rec["page"]
+    mapping = {
+        "{{TITLE}}": html.escape(rec["title"]),
+        "{{ID}}": html.escape(rec["id"]),
+        "{{DATE}}": html.escape(rec["dateLabel"]),
+        "{{DURATION_LABEL}}": html.escape(rec["durationLabel"]),
+        "{{VIDEO_URL}}": html.escape(rec["video"], quote=True),
+        "{{POSTER_URL}}": html.escape(rec["poster"], quote=True),
+        "{{PAGE_URL}}": html.escape(page, quote=True),
+        "{{PAGE_URL_JSON}}": json.dumps(page),
+        "{{REPO_URL}}": html.escape(f"https://github.com/{FULL_REPO}", quote=True),
+        "{{DOWNLOAD_URL}}": html.escape(rec["video"], quote=True),
+    }
+    out = template
+    for k, v in mapping.items():
+        out = out.replace(k, v)
+    return out
+
+
+def gh_release(tag: str, title: str, files: list[Path]) -> None:
+    existing = run(["gh", "release", "view", tag, "--repo", FULL_REPO])
+    if existing.returncode == 0:
+        for f in files:
+            up = run(["gh", "release", "upload", tag, str(f), "--repo", FULL_REPO, "--clobber"])
+            if up.returncode != 0:
+                die(f"gh release upload failed:\n{(up.stderr or up.stdout).strip()}")
+        return
+    cmd = [
+        "gh", "release", "create", tag,
+        *[str(f) for f in files],
+        "--repo", FULL_REPO,
+        "--title", title,
+        "--notes", f"Cap recording published as {PAGES}/v/{tag.removeprefix('v-')}/",
+    ]
+    p = run(cmd, timeout=600)
+    if p.returncode != 0:
+        die(f"gh release create failed:\n{(p.stderr or p.stdout).strip()}")
+
+
+def commit_and_push(message: str) -> None:
+    run_ok(["git", "-C", str(LOCAL), "add", "videos.json", "v", "index.html"])
+    st = run(["git", "-C", str(LOCAL), "status", "--porcelain"])
+    if not (st.stdout or "").strip():
+        return
+    run_ok(["git", "-C", str(LOCAL), "commit", "-m", message])
+    p = run(["git", "-C", str(LOCAL), "push", "origin", "HEAD"])
+    if p.returncode != 0:
+        die(f"git push failed:\n{(p.stderr or p.stdout).strip()}")
+
+
+def publish(src: Path, title: str | None) -> dict:
+    if not which("ffmpeg") or not which("ffprobe"):
+        die("ffmpeg/ffprobe required (brew install ffmpeg)")
+    if not which("gh"):
+        die("gh CLI required")
+
+    ensure_repo()
+    vid = new_id()
+    title = slug_title(title or src.stem.replace("-", " ").replace("_", " "))
+    created = datetime.now(timezone.utc)
+
+    with tempfile.TemporaryDirectory(prefix="share-cap-") as tmp:
+        work = Path(tmp)
+        source = resolve_source(src, work)
+        mp4 = prepare_mp4(source, work)
+        poster = make_poster(mp4, work)
+        info = ffprobe_info(mp4)
+        tag = f"v-{vid}"
+        video_url = f"https://github.com/{FULL_REPO}/releases/download/{tag}/video.mp4"
+        poster_url = f"https://github.com/{FULL_REPO}/releases/download/{tag}/poster.jpg"
+        page_url = f"{PAGES}/v/{vid}/"
+        rec = {
+            "id": vid,
+            "title": title,
+            "created": created.isoformat(),
+            "dateLabel": created.astimezone().strftime("%-d %b %Y, %-H:%M"),
+            "duration": round(info["duration"], 2),
+            "durationLabel": format_duration(info["duration"]),
+            "width": info["width"],
+            "height": info["height"],
+            "video": video_url,
+            "poster": poster_url,
+            "page": page_url,
+            "github": f"https://github.com/{FULL_REPO}/releases/tag/{tag}",
+        }
+        gh_release(tag, title, [mp4, poster])
+
+        template = (LOCAL / "scripts" / "player-template.html").read_text()
+        page_dir = LOCAL / "v" / vid
+        page_dir.mkdir(parents=True, exist_ok=True)
+        (page_dir / "index.html").write_text(render_player(template, rec))
+
+        catalog_path = LOCAL / "videos.json"
+        catalog = json.loads(catalog_path.read_text()) if catalog_path.exists() else {"videos": []}
+        catalog.setdefault("videos", [])
+        catalog["videos"] = [v for v in catalog["videos"] if v.get("id") != vid]
+        public = {k: rec[k] for k in ("id", "title", "created", "duration", "durationLabel", "video", "poster", "page", "github")}
+        catalog["videos"].append(public)
+        catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
+
+        commit_and_push(f"Share {vid}: {title}")
+        return rec
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Publish a Cap recording as a GitHub share URL")
+    parser.add_argument("file", nargs="?", help="Video file or .cap project")
+    parser.add_argument("--title", help="Title shown on the share page")
+    parser.add_argument("--latest", action="store_true", help="Use the newest Cap recording")
+    args = parser.parse_args()
+
+    if args.latest:
+        src = latest_recording()
+    elif args.file:
+        src = Path(args.file).expanduser().resolve()
+    else:
+        parser.print_help()
+        raise SystemExit(2)
+
+    rec = publish(src, args.title)
+    print(rec["page"])
+    print(rec["github"])
+    print(rec["video"])
+
+
+if __name__ == "__main__":
+    main()
